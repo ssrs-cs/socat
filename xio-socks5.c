@@ -5,7 +5,7 @@
 /* this file contains the source for opening addresses of socks5 type */
 
 /*
-* At the moment only SOCKS5 CONNECT is supported, not BIND or UDP ASSOCIATE.
+* At the moment UDP ASSOCIATE is not supported, but CONNECT and BIND are.
 * At the moment no authentication methods are supported (i.e only NO AUTH),
 * which is technically not compliant with RFC1928.
 */
