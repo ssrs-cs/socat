@@ -676,6 +676,7 @@
 #undef WITH_LISTEN
 #undef WITH_SOCKS4
 #undef WITH_SOCKS4A
+#undef WITH_SOCKS5
 #undef WITH_VSOCK
 #undef WITH_PROXY
 #undef WITH_EXEC

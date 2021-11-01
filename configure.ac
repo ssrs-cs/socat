@@ -396,6 +396,14 @@ AC_ARG_ENABLE(socks4a, [  --disable-socks4a       disable socks4a support],
 	       esac],
 	       [AC_DEFINE(WITH_SOCKS4A) AC_MSG_RESULT(yes)])
 
+AC_MSG_CHECKING(whether to include socks5 support)
+AC_ARG_ENABLE(socks5, [  --disable-socks5       disable socks5 support],
+	      [case "$enableval" in
+	       no) AC_MSG_RESULT(no);;
+	       *) AC_DEFINE(WITH_SOCKS5) AC_MSG_RESULT(yes);;
+	       esac],
+	       [AC_DEFINE(WITH_SOCKS5) AC_MSG_RESULT(yes)])
+
 AC_MSG_CHECKING(whether to include proxy connect support)
 AC_ARG_ENABLE(proxy, [  --disable-proxy         disable proxy connect support],
 	      [case "$enableval" in
