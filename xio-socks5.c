@@ -27,6 +27,8 @@
 #define SOCKS5_MODE_CONNECT	"socks5"
 #define SOCKS5_MODE_BIND	"socks5-bind"
 
+#define SOCKS5_MAX_REPLY_SIZE	6 + 256
+
 const uint8_t SOCKS5_AUTH_NONE		= 0;
 const uint8_t SOCKS5_AUTH_FAIL		= 0xff;
 
@@ -293,22 +295,22 @@ static struct socks5_request *_xioopen_socks5_prepare_request(int *bytes, const 
 
 /*
 * reads a server reply after a request has been sent
-* a reply is assumed to be the exact same size as a request
-* because if we are for example listening on an IPv4 address
-* we don't expect the remote server to tell us an IPv6 address
-* has connected.
 */
-static int _xioopen_socks5_read_reply(struct single *xfd, struct socks5_reply *reply, int bytes, int level){
+static int _xioopen_socks5_read_reply(struct single *xfd, struct socks5_reply *reply, int level){
 	int result = 0;
 	int bytes_read = 0;
-	while (bytes >= 0) {
+
+	int bytes_to_read = 5;
+	bool typechecked = false;
+
+	while (bytes_to_read >= 0) {
 		Info("reading SOCKS5 reply");
 		do {
-			result = Read(xfd->fd, ((unsigned char *)reply) + bytes_read, bytes-bytes_read);
+			result = Read(xfd->fd, ((unsigned char *)reply) + bytes_read, bytes_to_read-bytes_read);
 		} while (result < 0 && errno == EINTR);
 		if (result < 0) {
 			Msg4(level, "read(%d, %p, "F_Zu"): %s",
-				xfd->fd, ((unsigned char *)reply) + bytes_read, bytes-bytes_read, strerror(errno));
+				xfd->fd, ((unsigned char *)reply) + bytes_read, bytes_to_read-bytes_read, strerror(errno));
 			if (Close(xfd->fd) < 0) {
 				Info2("close(%d): %s", xfd->fd, strerror(errno));
 			}
@@ -322,14 +324,41 @@ static int _xioopen_socks5_read_reply(struct single *xfd, struct socks5_reply *r
 			}
 			return STAT_RETRYLATER;
 		}
-
 		bytes_read += result;
-		if (bytes == bytes_read) {
-			Debug1("received all "F_Zd" bytes", bytes);
+
+		/* once we've read 5 bytes, figure out total message length and
+		*  update bytes_to_read accordingly. */
+		if (!typechecked && bytes_read <= 5) {
+			switch(reply->address_type) {
+				case SOCKS5_ATYPE_IPv4:
+					// 6 fixed bytes, and 4 bytes for v4 address
+					bytes_to_read = 10;
+					break;
+				case SOCKS5_ATYPE_IPv6:
+					// 6 fixed bytes, and 16 bytes for v6 address
+					bytes_to_read = 22;
+					break;
+				case SOCKS5_ATYPE_DOMAINNAME:
+					// 6 fixed bytes, 1 byte for strlen, and 0-255 bytes for domain name
+					bytes_to_read = 7 + reply->dstdata[0];
+					break;
+				default:
+					Msg1(level, "invalid SOCKS5 reply address type (%d)", reply->address_type);
+					if (Close(xfd->fd) < 0) {
+						Info2("close(%d): %s", xfd->fd, strerror(errno));
+					}
+					return STAT_RETRYLATER;
+			}
+			typechecked = true;
+			continue;
+		}
+
+		if (bytes_to_read == bytes_read) {
+			Debug1("received all "F_Zd" bytes", bytes_read);
 			break;
 		}
 
-		Debug2("received %d of %d bytes, waiting", bytes_read, bytes);
+		Debug2("received %d of %d bytes, waiting", bytes_read, bytes_to_read);
 	}
 
 	if (result <= 0) {
@@ -386,12 +415,21 @@ static int _xioopen_socks5_request(struct single *xfd, const char *target_name, 
 		free(req);
 		return STAT_RETRYLATER;
 	}
+	free(req);
+	req = NULL;
 
-	/* reply should always be same size as request, so re-use buffer. */
-	struct socks5_reply *reply = (struct socks5_reply *)req;
-	result = _xioopen_socks5_read_reply(xfd, reply, bytes, level);
+	struct socks5_reply *reply = Malloc(SOCKS5_MAX_REPLY_SIZE);
+	if (reply == NULL) {
+		if (Close(xfd->fd) < 0) {
+			Info2("close(%d): %s", xfd->fd, strerror(errno));
+		}
+
+		return STAT_RETRYLATER;
+	}
+
+	result = _xioopen_socks5_read_reply(xfd, reply, level);
 	if (result != STAT_OK) {
-		free(req);
+		free(reply);
 		return result;
 	}
 
@@ -408,22 +446,16 @@ static int _xioopen_socks5_request(struct single *xfd, const char *target_name, 
 		if (Close(xfd->fd) < 0) {
 			Info2("close(%d): %s", xfd->fd, strerror(errno));
 		}
-		free(req);
+		free(reply);
 		return STAT_RETRYLATER;
 	}
 
 	if (reply->reply == SOCKS5_STATUS_SUCCESS && socks_command == SOCKS5_COMMAND_BIND) {
 		Notice("listening on remote host, waiting for connection"); // TODO: nicer debug output
 		/* for BIND, we read two replies */
-		result = _xioopen_socks5_read_reply(xfd, reply, bytes, level);
+		result = _xioopen_socks5_read_reply(xfd, reply, level);
 		if (result != STAT_OK) {
-			Msg2(level, "SOCKS5 server error on 2nd reply %d: %s",
-				reply->reply,
-				_xioopen_socks5_strerror(reply->reply));
-			if (Close(xfd->fd) < 0) {
-				Info2("close(%d): %s", xfd->fd, strerror(errno));
-			}
-			free(req);
+			free(reply);
 			return result;
 		}
 		Notice("received connection on remote host"); // TODO: nicer debug output
@@ -452,11 +484,11 @@ static int _xioopen_socks5_request(struct single *xfd, const char *target_name, 
 			if (Close(xfd->fd) < 0) {
 				Info2("close(%d): %s", xfd->fd, strerror(errno));
 			}
-			free(req);
+			free(reply);
 			return STAT_RETRYLATER;
 	}
 
-	free(req);
+	free(reply);
 	return STAT_OK;
 }
 
